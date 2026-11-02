@@ -27,6 +27,11 @@ def span_counts(region: Region) -> Dict[str, int]:
             "e2e": sum((keys_a & keys_b).values())}
 
 
+def stacked(region: Region) -> bool:
+    """True if an annotator put several concepts on one span of the region."""
+    return len(region.a) > len(region.spans_a) or len(region.b) > len(region.spans_b)
+
+
 def is_exact(region: Region) -> bool:
     """EXACT: both annotators have mentions in the region, none unresolved, with the same spans and concept keys."""
     a, b = region.a, region.b
@@ -76,6 +81,25 @@ def alpha_units(clustered: pd.DataFrame) -> pd.DataFrame:
     multi = set(counts[counts > 1].index.get_level_values(0))
     single = clustered[~clustered["cluster"].isin(multi)]
     return single[["cluster", "doc", "user", "key", "concept", "status"]].reset_index(drop=True)
+
+
+def alpha_left_out(clustered: pd.DataFrame) -> pd.DataFrame:
+    """Clusters of at least two annotators that ``alpha_units`` leaves out because an annotator has several mentions
+    in them, per (doc, user_a, user_b) and reason: ``stack`` if an annotator put several concepts on one span, else
+    ``spans`` (several spans of one annotator: split, nested, overlapping). Counted as pairable values like the ``n``
+    of ``alpha_terms``: a cluster of m annotators adds 2 / (m − 1) to each of its pairs, m in all."""
+    rows: Dict[Tuple[str, str, str], Dict[str, float]] = {}
+    for (doc, _), c in clustered.groupby(["doc", "cluster"], sort=True):
+        users = sorted(set(c["user"]))
+        if len(users) < 2 or len(c) == len(users):
+            continue
+        reason = "stack" if c.duplicated(["user", "begin", "end"]).any() else "spans"
+        weight = 2.0 / (len(users) - 1)
+        for ua, ub in combinations(users, 2):
+            row = rows.setdefault((doc, ua, ub), {"stack": 0.0, "spans": 0.0})
+            row[reason] += weight
+    return pd.DataFrame([{"doc": d, "user_a": a, "user_b": b, **v} for (d, a, b), v in sorted(rows.items())],
+                        columns=["doc", "user_a", "user_b", "stack", "spans"])
 
 
 def alpha_terms(unit_rows: pd.DataFrame, value: str = "key") -> pd.DataFrame:

@@ -39,6 +39,29 @@ def test_pair_counts_of_the_scenario(ctx):
     assert len(counts) == 6 and counts.loc["doc1.txt", "exact_inherited"].sum() == 0  # doc1: no pre-annotation
 
 
+def test_what_kappa_and_alpha_leave_out(ctx):
+    counts = C.pair_counts(ctx)
+    out = counts.set_index(["doc", "user_a", "user_b"])[["kappa_out_stack", "kappa_out_spans", "alpha_out_stack",
+                                                        "alpha_out_spans"]]
+    # doc1: u1 stacks two concepts on "HWI" (u2 marks it once, u3 not at all); u2 splits "verletzter linker Hand"
+    # and "Keine Lähmung", u3 nests "linker" in "verletzter linker Hand"
+    assert out.loc[("doc1.txt", "u1", "u2")].tolist() == [1, 0, 2, 2]
+    assert out.loc[("doc1.txt", "u1", "u3")].tolist() == [0, 0, 0, 2]
+    assert out.loc[("doc1.txt", "u2", "u3")].tolist() == [0, 0, 0, 2]
+    assert out.loc["doc2.txt"].to_numpy().sum() == 0
+    # κ: used + left out = regions with the same spans on both sides; α: = annotators of the clusters of >= 2
+    exact_spans = sum(1 for r in ctx.regions if r.kind == "exact")
+    assert counts[["kappa_n", "kappa_out_stack", "kappa_out_spans"]].to_numpy().sum() == exact_spans
+    sizes = ctx.clustered.groupby("cluster")["user"].nunique()
+    assert counts[["alpha_n", "alpha_out_stack", "alpha_out_spans"]].to_numpy().sum() == pytest.approx(
+        sizes[sizes >= 2].sum())
+    covered = C.coverage(counts).set_index("figure")
+    assert covered.loc[:, ["total", "used", "left_out_stack", "left_out_spans"]].values.tolist() == [
+        [exact_spans, exact_spans - 1, 1, 0], [32, 24, 2, 6]]
+    assert covered["coverage"].tolist() == pytest.approx([16 / 17, 24 / 32])
+    assert C.stacked_spans(ctx.mentions).to_dict() == {"u1": 1, "u2": 0, "u3": 0}
+
+
 def test_alpha_is_krippendorffs_alpha_per_document(ctx):
     derived = C._derive(C.pair_counts(ctx)).groupby("doc")[["alpha_n", "alpha_num", "alpha_den"]].sum()
     units = M.alpha_units(clusters(ctx.mentions))
@@ -84,9 +107,15 @@ def test_site_report_content(runs):
     annotators = pd.read_csv(run / "share" / "annotators.csv")
     assert len(annotators) == 5                                          # 3 analysed, 2 only excluded
     assert annotators[["untouched", "copies"]].sum().tolist() == [1, 1]
+    assert data["stacked_spans"] == 1 and "## Coverage of κ and α" in report
+    assert [c["coverage"] for c in summary["coverage"]] == pytest.approx([16 / 17, 24 / 32])
+    assert pd.read_csv(run / "share" / "coverage.csv")["left_out_stack"].tolist() == [1, 2]
     # the local folder resolves the codes; the codes stay the same in the next run
     local = pd.read_csv(run / "local" / "annotators.csv")
     assert set(local["ui_name"]) == {ui for _, ui in USERS if ui != "city2_anno1"}
+    assert local.set_index("ui_name")["stacked_spans"].to_dict() == {
+        "city0_anno1": 1, "city1_anno1": 0, "city1_anno2": 0, "city2_anno2": 0, "city3_anno1": 0}
+    assert {"kappa_coverage", "alpha_coverage"} <= set(local.columns)
     assert (run / "local" / "exclusion_report.md").exists() and (run / "local" / "gemtex-iaa-semantic.log").exists()
     key = pd.read_csv(directory / "results" / "pseudonyms.csv")
     assert set(key["kind"]) == {"document", "annotator"} and len(key) == 7
@@ -102,6 +131,12 @@ def test_pool(runs, tmp_path):
     for name, value in single.items():                                  # the same data twice: same ratios
         for site in ("ALL", "site_a", "site_b"):
             assert pooled[(site, name)] == pytest.approx(value)
+    coverage = pd.read_csv(pooled_run / "pooled_coverage.csv").set_index(["site", "figure"])
+    single_coverage = pd.read_csv(a / "share" / "coverage.csv").set_index("figure")
+    for site in ("site_a", "site_b"):
+        assert coverage.loc[site, "used"].tolist() == single_coverage["used"].tolist()
+    assert coverage.loc["ALL", "total"].tolist() == (2 * single_coverage["total"]).tolist()
+    assert coverage.loc["ALL", "coverage"].tolist() == pytest.approx(single_coverage["coverage"].tolist())
     annotators = pd.read_csv(pooled_run / "pooled_annotators.csv")
     assert set(annotators["site"]) == {"site_a", "site_b"} and annotators["annotator"].str.match(r"site_[ab]:A").all()
     report = (pooled_run / "pooled_report.md").read_text(encoding="utf-8")

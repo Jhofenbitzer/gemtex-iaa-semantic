@@ -60,6 +60,19 @@ def test_alpha_units_drop_clusters_with_several_mentions_of_one_annotator():
     assert units["key"].tolist() == ["C3", "C3"]
 
 
+def test_stacks_and_left_out_clusters():
+    m = mentions([("a", 0, 10, "C1"), ("a", 0, 10, "C2"), ("b", 0, 10, "C1"), ("c", 0, 10, "C1"),   # a stacks
+                  ("a", 20, 30, "C3"), ("b", 20, 24, "C3"), ("b", 25, 30, "C4"),                    # b splits
+                  ("a", 40, 45, "C5"), ("a", 40, 45, "C6"), ("a", 42, 50, "C7"),                    # a alone
+                  ("a", 60, 65, "C8"), ("b", 60, 65, "C8")])                                        # kept
+    regions = {(r.user_a, r.user_b, r.begin): r for r in A.all_pair_regions(m)}
+    assert M.stacked(regions[("a", "b", 0)]) and not M.stacked(regions[("a", "b", 20)])
+    out = M.alpha_left_out(A.clusters(m)).set_index(["user_a", "user_b"])[["stack", "spans"]]
+    # the stack: 3 annotators, 2 / (3 - 1) per pair; the split: 2 annotators, 2 for the pair
+    assert out.loc[("a", "b")].tolist() == [1, 2] and out.loc[("a", "c")].tolist() == [1, 0]
+    assert out.loc[("b", "c")].tolist() == [1, 0] and out[["stack", "spans"]].to_numpy().sum() == 3 + 2
+
+
 def test_bootstrap_ratio():
     df = pd.DataFrame({"doc": ["x", "x", "y", "z"], "num": [1, 2, 3, 0], "den": [2, 2, 4, 2]})
     point, lo, hi = M.bootstrap_ratio(df, "num", "den", n_boot=200)

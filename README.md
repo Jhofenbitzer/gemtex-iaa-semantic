@@ -47,7 +47,7 @@ annotation states, layers, value formats and how many concept ids resolve in the
 * `share/` is sent back. Documents and annotators appear only as codes (`D0001`, `A01`). It holds no document text,
   no file, project, account or display names, no concepts and no paths. Files:
   * `report.md` and `summary.json`: data counts, figures, settings, tool version;
-  * `figures.csv`, `annotators.csv` and `annotator_pairs.csv`;
+  * `figures.csv`, `coverage.csv` (what κ and α leave out), `annotators.csv` and `annotator_pairs.csv`;
   * `pair_counts.csv`: the counts behind every figure per document and annotator pair.
 * `local/` stays at the site: the same tables with real names, `exclusion_report.md` and the log.
 
@@ -89,6 +89,21 @@ percentile bootstrap CI over documents:
 Per annotator and annotator pair, `annotators.csv` and `annotator_pairs.csv` give the same figures; per annotator,
 they also count the untouched, copied and low-change annotation documents.
 
+### Stacked concepts and coverage
+
+A *stack* is one annotator putting several concepts on the same span. Only end-to-end F1 counts each concept of a
+stack. The span F1s count the span once, and an exactly agreeing region (share inherited) needs the same stack on
+both sides. κ and α need one mention per annotator and leave the rest out, so `coverage.csv` (and the section
+"Coverage of κ and α" of the report) says how much of their data they use and why the rest is left out:
+
+* **κ**: of the regions where both annotators marked the same spans, those with a stack, and those with several
+  spans marked identically by both (e.g. nested ones). Regions with different boundaries are outside κ by design;
+* **α**: of the annotator × cluster values in clusters of at least two annotators, the clusters where an annotator
+  stacked concepts, and those where an annotator marked several spans (split, nested or overlapping).
+
+`annotators.csv` and `annotator_pairs.csv` have the same shares (`kappa_coverage`, `alpha_coverage`), and
+`annotators.csv` counts each annotator's stacked spans (`stacked_spans`).
+
 ## Pooling
 
 Centrally, with the returned `share` folders (or run directories):
@@ -97,8 +112,8 @@ Centrally, with the returned `share` folders (or run directories):
 uv run gemtex-iaa-semantic pool <share folders…> [--out DIR]
 ```
 
-`pool` recomputes every figure over all documents of all sites, overall and per site, from `pair_counts.csv`, and
-writes `DIR/<timestamp>_pool/pooled_report.md` with the CSV tables. Documents and annotators are site-specific
+`pool` recomputes every figure and the coverage over all documents of all sites, overall and per site, from
+`pair_counts.csv`, and writes `DIR/<timestamp>_pool/pooled_report.md` with the CSV tables. Documents and annotators are site-specific
 (`<site>:<code>`). It warns if the sites used different tool versions or settings, and pools a share without some
 counts (made with an older version) without the figures that need them.
 

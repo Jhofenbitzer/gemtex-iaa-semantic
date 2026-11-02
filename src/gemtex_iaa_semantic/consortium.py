@@ -51,9 +51,10 @@ from gemtex_iaa_semantic.snomed import SnomedStore
 log = logging.getLogger(__name__)
 
 COUNTS = ["n_a", "n_b", "strict", "lenient", "e2e_a", "e2e_b", "e2e", "kappa_n", "kappa_agree", "kappa_expected",
-          "alpha_n", "alpha_agree", "alpha_expected", "exact", "exact_inherited"]
+          "kappa_out_stack", "kappa_out_spans", "alpha_n", "alpha_agree", "alpha_expected", "alpha_out_stack",
+          "alpha_out_spans", "exact", "exact_inherited"]
 PAIR_COLUMNS = ["doc", "annotator_a", "annotator_b", *COUNTS]
-SHARE_FILES = ["report.md", "summary.json", "figures.csv", "annotators.csv", "annotator_pairs.csv",
+SHARE_FILES = ["report.md", "summary.json", "figures.csv", "coverage.csv", "annotators.csv", "annotator_pairs.csv",
                "pair_counts.csv"]
 
 
@@ -77,6 +78,25 @@ FIGURES = [
     Figure("share of EXACT regions inherited from the pre-annotation", "exact_inherited", "exact_inherited",
            "exact"),
 ]
+
+
+@dataclass(frozen=True)
+class Coverage:
+    """What a figure uses (``used``) of its units, and what it leaves out because of stacked concepts (``stack``) or
+    of several spans in one region or cluster (``spans``)."""
+    figure: str                 # Figure.column
+    unit: str
+    used: str
+    stack: str
+    spans: str
+
+
+COVERAGE = [
+    Coverage("kappa", "regions with the same spans on both sides", "kappa_n", "kappa_out_stack", "kappa_out_spans"),
+    Coverage("alpha", "annotator x cluster values, clusters of at least two annotators", "alpha_n", "alpha_out_stack",
+             "alpha_out_spans"),
+]
+COVERAGE_COLUMNS = ["figure", "unit", "total", "used", "left_out_stack", "left_out_spans", "coverage"]
 DEFINITIONS = [
     "**span F1 strict / lenient**: mentions of two annotators with the same span / with overlapping spans (matched "
     "one to one); n = spans of both annotators, stacked spans counted once.",
@@ -89,7 +109,21 @@ DEFINITIONS = [
     "**share inherited**: of the regions where both annotators agree exactly, the share where both kept the "
     "pre-annotation (INITIAL_CAS) unchanged; n = exactly agreeing regions. High values mean that the agreement "
     "above largely repeats the pre-annotation.",
+    "**stacked concepts** (one annotator, several concepts on one span): only end-to-end F1 counts each of them. "
+    "The span F1s count the span once, κ and α leave regions and clusters with a stack out (see Coverage), and an "
+    "exactly agreeing region needs the same stack on both sides.",
     "Values are pooled over documents and annotator pairs; the 95 % CI is a percentile bootstrap over documents.",
+]
+COVERAGE_DEFINITIONS = [
+    "**κ** compares concepts on identical spans: of the regions where both annotators marked the same spans, it uses "
+    "those with one mention per annotator. It leaves out regions with a stack, and regions with several spans "
+    "marked identically by both (e.g. nested ones). Regions with different boundaries are outside κ by design (see "
+    "the span F1s).",
+    "**α** uses the clusters of overlapping mentions in which every annotator has one mention. It leaves out "
+    "clusters in which an annotator stacked concepts, or marked several spans (split, nested or overlapping); a "
+    "cluster with both counts as stacked. Units are annotator x cluster values, as in the n of α.",
+    "`coverage` = used / total. Per annotator and annotator pair, `kappa_coverage` and `alpha_coverage` are the same "
+    "shares over their documents.",
 ]
 
 
@@ -109,6 +143,8 @@ def pair_counts(ctx) -> pd.DataFrame:
         if M.is_exact(region):
             row["exact"] += 1
             row["exact_inherited"] += side == "both"
+        if region.kind == A.EXACT and (len(region.a) > 1 or len(region.b) > 1):       # not 1:1: outside κ
+            row["kappa_out_stack" if M.stacked(region) else "kappa_out_spans"] += 1
     one = M.one_to_one_pairs(ctx.regions)
     for k in M.kappa_terms(one[one["region_kind"] == A.EXACT]).itertuples(index=False):
         row = rows[(k.doc, k.user_a, k.user_b)]
@@ -116,6 +152,9 @@ def pair_counts(ctx) -> pd.DataFrame:
     for k in M.alpha_terms(M.alpha_units(ctx.clustered)).itertuples(index=False):
         row = rows[(k.doc, k.user_a, k.user_b)]
         row["alpha_n"], row["alpha_agree"], row["alpha_expected"] = k.n, k.agree, k.expected
+    for k in M.alpha_left_out(ctx.clustered).itertuples(index=False):
+        row = rows[(k.doc, k.user_a, k.user_b)]
+        row["alpha_out_stack"], row["alpha_out_spans"] = k.stack, k.spans
     out = pd.DataFrame([{"doc": d, "user_a": a, "user_b": b, **v} for (d, a, b), v in rows.items()],
                        columns=["doc", "user_a", "user_b", *COUNTS])
     if not len(pre):
@@ -145,13 +184,34 @@ def figures(counts: pd.DataFrame, n_boot: int = 1000, seed: int = 13, group: str
     return pd.DataFrame(rows, columns=["figure", "value", "ci_low", "ci_high", "n", "documents", "pairs"])
 
 
+def coverage(counts: pd.DataFrame) -> pd.DataFrame:
+    """How much of its units κ and α use over ``counts`` (PAIR_COLUMNS), and what they leave out (COVERAGE)."""
+    names = {f.column: f.name for f in FIGURES}
+    rows = []
+    for c in COVERAGE:
+        sub = counts.dropna(subset=[c.used, c.stack, c.spans])
+        used, stack, spans = (float(sub[x].sum()) for x in (c.used, c.stack, c.spans))
+        total = used + stack + spans
+        rows.append({"figure": names[c.figure], "unit": c.unit, "total": int(round(total)), "used": int(round(used)),
+                     "left_out_stack": int(round(stack)), "left_out_spans": int(round(spans)),
+                     "coverage": used / total if total else float("nan")})
+    return pd.DataFrame(rows, columns=COVERAGE_COLUMNS)
+
+
 def _values(df: pd.DataFrame) -> Dict[str, float]:
     out = {}
     for f in FIGURES:
         sub = df.dropna(subset=[f.num, f.den])
         den = sub[f.den].sum()
         out[f.column] = float(f.factor * sub[f.num].sum() / den) if den else float("nan")
+    for c in COVERAGE:
+        sub = df.dropna(subset=[c.used, c.stack, c.spans])
+        total = sub[[c.used, c.stack, c.spans]].to_numpy(float).sum()
+        out[f"{c.figure}_coverage"] = float(sub[c.used].sum() / total) if total else float("nan")
     return out
+
+
+VALUE_COLUMNS = [*[f.column for f in FIGURES], *[f"{c.figure}_coverage" for c in COVERAGE]]
 
 
 def by_annotator(counts: pd.DataFrame) -> pd.DataFrame:
@@ -160,7 +220,7 @@ def by_annotator(counts: pd.DataFrame) -> pd.DataFrame:
     both = pd.concat([df.assign(annotator=df["annotator_a"]), df.assign(annotator=df["annotator_b"])])
     rows = [{"annotator": a, "documents": g["doc"].nunique(), "pairs": len(g), **_values(g)}
             for a, g in both.groupby("annotator", sort=True)]
-    return pd.DataFrame(rows, columns=["annotator", "documents", "pairs", *[f.column for f in FIGURES]])
+    return pd.DataFrame(rows, columns=["annotator", "documents", "pairs", *VALUE_COLUMNS])
 
 
 def by_pair(counts: pd.DataFrame) -> pd.DataFrame:
@@ -168,7 +228,7 @@ def by_pair(counts: pd.DataFrame) -> pd.DataFrame:
     df = _derive(counts)
     rows = [{"annotator_a": a, "annotator_b": b, "documents": g["doc"].nunique(), **_values(g)}
             for (a, b), g in df.groupby(["annotator_a", "annotator_b"], sort=True)]
-    return pd.DataFrame(rows, columns=["annotator_a", "annotator_b", "documents", *[f.column for f in FIGURES]])
+    return pd.DataFrame(rows, columns=["annotator_a", "annotator_b", "documents", *VALUE_COLUMNS])
 
 
 # ---------------- pseudonyms ----------------
@@ -232,8 +292,10 @@ def tool_version() -> str:
     return text
 
 
-def data_counts(data: L.ProjectData, selection: Optional[SEL.Selection], counts: pd.DataFrame) -> Dict[str, int]:
-    """Text-free counts of what was read (``data``: as loaded), excluded and analysed (``counts``: pair_counts)."""
+def data_counts(data: L.ProjectData, selection: Optional[SEL.Selection], counts: pd.DataFrame,
+                stacks: int = 0) -> Dict[str, int]:
+    """Text-free counts of what was read (``data``: as loaded), excluded and analysed (``counts``: pair_counts;
+    ``stacks``: stacked spans in the analysed documents)."""
     meta = data.meta
     status = meta.get("document_status", {})
     ex = selection.excluded if selection is not None else pd.DataFrame(columns=["reason"])
@@ -254,6 +316,7 @@ def data_counts(data: L.ProjectData, selection: Optional[SEL.Selection], counts:
         "annotators_analysed": int(len(set(counts["user_a"]) | set(counts["user_b"]))) if len(counts) else 0,
         "annotator_pairs": int(len(counts[["user_a", "user_b"]].drop_duplicates())) if len(counts) else 0,
         "document_annotator_pairs": int(len(counts)),
+        "stacked_spans": int(stacks),
     }
 
 
@@ -272,6 +335,7 @@ DATA_LABELS = {
     "annotators_analysed": "annotators analysed",
     "annotator_pairs": "annotator pairs",
     "document_annotator_pairs": "document x annotator pairs",
+    "stacked_spans": "stacked spans (one annotator, several concepts on one span) in the analysed documents",
 }
 
 
@@ -290,6 +354,12 @@ def annotator_checks(selection: Optional[SEL.Selection]) -> pd.DataFrame:
              "low_change_analysed": int(((low["user"] == u) & (low["excluded_as"] == "")).sum())}
             for u in sorted(set(ex["user"]) | set(low["user"]))]
     return pd.DataFrame(rows, columns=["user", *CHECKS])
+
+
+def stacked_spans(mentions: pd.DataFrame) -> pd.Series:
+    """Per user (real names): the spans on which the user put several concepts."""
+    per_span = mentions.groupby(["doc", "user", "begin", "end"]).size()
+    return (per_span > 1).groupby(level="user").sum().astype(int)
 
 
 def _settings(cfg: Config, release: str, preannotation: bool) -> Dict[str, object]:
@@ -317,6 +387,7 @@ def site_report(cfg: Config, out_dir: Path, use_cache: bool = True) -> Path:
     else:
         log.warning("no document has at least %d annotators in %s", cfg.MIN_ANNOTATORS, ", ".join(cfg.STATES))
     preannotation = bool(ctx is not None and len(ctx.preannotation))
+    stacks = stacked_spans(ctx.mentions) if ctx is not None else pd.Series(dtype=int)
 
     pseudonyms = Pseudonyms(Path(cfg.DIR_OUTPUT) / "pseudonyms.csv")
     checks = annotator_checks(selection)
@@ -326,24 +397,29 @@ def site_report(cfg: Config, out_dir: Path, use_cache: bool = True) -> Path:
 
     coded = pseudonymise(counts, docs, users)
     overall = figures(coded, cfg.BOOTSTRAP, cfg.SEED)
+    covered = coverage(coded)
     checks = checks.assign(annotator=checks["user"].map(users).astype(object)).drop(columns="user")
     annotators = by_annotator(coded).astype({"annotator": object}).merge(checks, on="annotator", how="outer")
     counted = ["documents", "pairs", *CHECKS]                  # 0 for annotators whose documents were all excluded
     annotators[counted] = annotators[counted].fillna(0).astype(int)
+    annotators["stacked_spans"] = annotators["annotator"].map(
+        {users[u]: n for u, n in stacks.items()}).fillna(0).astype(int)
     annotators = annotators.sort_values("annotator").reset_index(drop=True)
     pairs = by_pair(coded)
     summary = {"site": cfg.SITE, "tool": tool_version(), "generated": f"{datetime.now():%Y-%m-%d %H:%M}",
                "settings": _settings(cfg, store.release_date, preannotation),
-               "data": data_counts(data, selection, counts),
-               "figures": json.loads(overall.to_json(orient="records"))}
+               "data": data_counts(data, selection, counts, int(stacks.sum())),
+               "figures": json.loads(overall.to_json(orient="records")),
+               "coverage": json.loads(covered.to_json(orient="records"))}
 
     (share / "summary.json").write_text(json.dumps(summary, indent=1, ensure_ascii=False), encoding="utf-8")
     overall.to_csv(share / "figures.csv", index=False)
+    covered.to_csv(share / "coverage.csv", index=False)
     annotators.to_csv(share / "annotators.csv", index=False)
     pairs.to_csv(share / "annotator_pairs.csv", index=False)
     coded.to_csv(share / "pair_counts.csv", index=False)
     report = share / "report.md"
-    report.write_text(_site_markdown(summary, overall, annotators, pairs), encoding="utf-8")
+    report.write_text(_site_markdown(summary, overall, covered, annotators, pairs), encoding="utf-8")
 
     # the same tables with the real names, for the site only
     ui_names = data.annotators.set_index("user")["ui_name"]
@@ -363,7 +439,8 @@ def site_report(cfg: Config, out_dir: Path, use_cache: bool = True) -> Path:
     return report
 
 
-def _site_markdown(summary: Dict, overall: pd.DataFrame, annotators: pd.DataFrame, pairs: pd.DataFrame) -> str:
+def _site_markdown(summary: Dict, overall: pd.DataFrame, covered: pd.DataFrame, annotators: pd.DataFrame,
+                   pairs: pd.DataFrame) -> str:
     data = pd.DataFrame([(DATA_LABELS.get(k, k), v) for k, v in summary["data"].items()], columns=["item", "count"])
     lines = [f"# Agreement report: {summary['site']}\n",
              f"_generated {summary['generated']} with gemtex-iaa-semantic {summary['tool']}_\n",
@@ -372,10 +449,13 @@ def _site_markdown(summary: Dict, overall: pd.DataFrame, annotators: pd.DataFram
              "## Data\n", markdown_table(data, max_rows=len(data)),
              "## Agreement\n", markdown_table(overall),
              *[f"* {d}" for d in DEFINITIONS], "",
+             "## Coverage of κ and α\n", markdown_table(covered),
+             *[f"* {d}" for d in COVERAGE_DEFINITIONS], "",
              "## Annotators\n",
              "Figures over all documents and partners of the annotator. Annotation documents `untouched` "
              "(pre-annotation left as it was), `copies` and `low_change_excluded` were excluded; "
-             "`low_change_analysed` changed less than PREANNO_LOW_CHANGE of the pre-annotation but were analysed.\n",
+             "`low_change_analysed` changed less than PREANNO_LOW_CHANGE of the pre-annotation but were analysed. "
+             "`stacked_spans`: spans on which the annotator put several concepts.\n",
              markdown_table(annotators, max_rows=max(1, len(annotators))),
              "## Annotator pairs\n", markdown_table(pairs, max_rows=max(1, len(pairs))),
              "## Settings\n", *[f"* {k}: {v}" for k, v in summary["settings"].items()], ""]
@@ -416,6 +496,9 @@ def pool(directories: Sequence[Path], n_boot: int = 1000, seed: int = 13) -> Dic
     rows += [figures(g, n_boot, seed).assign(site=site) for site, g in counts.groupby("site", sort=True)]
     pooled = pd.concat(rows, ignore_index=True)
     pooled = pooled[["site", *[c for c in pooled.columns if c != "site"]]]
+    covered = pd.concat([coverage(counts).assign(site="ALL"),
+                         *[coverage(g).assign(site=site) for site, g in counts.groupby("site", sort=True)]],
+                        ignore_index=True)[["site", *COVERAGE_COLUMNS]]
     annotators = by_annotator(counts)
     annotators.insert(0, "site", annotators["annotator"].str.split(":").str[0])
     sites = pd.DataFrame([{"site": s["site"], "tool": s["tool"], "generated": s["generated"], **s["data"]}
@@ -436,7 +519,7 @@ def pool(directories: Sequence[Path], n_boot: int = 1000, seed: int = 13) -> Dic
     without = [s["site"] for s in summaries if not s["settings"].get("pre-annotation")]
     if without:
         warnings.append(f"no pre-annotation (not in the inherited share): {', '.join(without)}")
-    return {"figures": pooled, "annotators": annotators, "sites": sites, "pair_counts": counts,
+    return {"figures": pooled, "coverage": covered, "annotators": annotators, "sites": sites, "pair_counts": counts,
             "warnings": warnings}
 
 
@@ -451,6 +534,7 @@ def write_pool(result: Dict[str, object], out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     pooled, sites = result["figures"], result["sites"]
     pooled.to_csv(out_dir / "pooled_figures.csv", index=False)
+    result["coverage"].to_csv(out_dir / "pooled_coverage.csv", index=False)
     result["annotators"].to_csv(out_dir / "pooled_annotators.csv", index=False)
     sites.to_csv(out_dir / "sites.csv", index=False)
     result["pair_counts"].to_csv(out_dir / "pooled_pair_counts.csv", index=False)
@@ -465,6 +549,8 @@ def write_pool(result: Dict[str, object], out_dir: Path) -> Path:
              f"_generated {datetime.now():%Y-%m-%d %H:%M}_\n",
              "## Warnings\n", *([f"* {w}" for w in result["warnings"]] or ["none"]), "",
              "## Agreement (value [95 % CI])\n", markdown_table(wide), *[f"* {d}" for d in DEFINITIONS], "",
+             "## Coverage of κ and α\n", markdown_table(result["coverage"], max_rows=len(result["coverage"])),
+             *[f"* {d}" for d in COVERAGE_DEFINITIONS], "",
              "## Data\n", markdown_table(data.rename_axis("item"), max_rows=len(data)),
              "## Sites\n", markdown_table(sites[["site", "tool", "generated"]], max_rows=max(1, len(sites)))]
     path = out_dir / "pooled_report.md"
