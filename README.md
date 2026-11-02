@@ -1,7 +1,7 @@
 # gemtex-iaa-semantic
 
 This tool computes inter-annotator agreement for the semantic annotation in GeMTeX, i.e. SNOMED CT concepts
-annotated in INCEpTION following the GeMTeX [annotation guidelines (v2.3.3)](https://zenodo.org/records/20085886).
+annotated in INCEpTION following the GeMTeX [annotation guidelines (v2.3.3)](https://zenodo.org/records/20085886). It is inspired by the Inceptalytics implementation (https://eclipse-inception.github.io/tools/inceptalytics/).
 
 The clinical texts can't leave the sites, so the agreement is computed where the data is. Every site runs
 `site-report` on its own INCEpTION exports and gets a folder of counts and figures without any text, names or
@@ -17,29 +17,12 @@ uv sync --no-dev
 cp config/example.cfg config/site.cfg
 ```
 
-Most settings in `config/site.cfg` can stay as they are, but three need your attention:
+Most settings in `config/site.cfg` can stay as they are. Make sure to adjust those:
 
-- `SITE` is the name of your site, as agreed in the consortium.
+- `SITE` is the name of your site.
 - `PATH_PROJECT` points to your zipped INCEpTION project exports (UIMA CAS XMI). You can give files, directories
   (all `*.zip` files in them are read) or glob patterns, separated by commas or line breaks.
-- `HDF5` is the path to the SNOMED CT file (International Edition 2024-04-01) that we distribute within the
-  consortium. It is licensed, so it isn't part of this repository.
-
-Git ignores `config/site.cfg` and `data/`, so you can't commit your exports, the HDF5 file or your results by
-mistake.
-
-### Troubleshooting on macOS
-
-If `uv run` stops with `ModuleNotFoundError: No module named 'gemtex_iaa_semantic'`, macOS has probably flagged the
-files of the editable install as hidden (this happens in folders synced with iCloud), and Python skips hidden files.
-Installing without editable mode gets around it:
-
-```bash
-uv sync --no-dev --no-editable
-uv run --no-sync gemtex-iaa-semantic ...
-```
-
-In that case, run the `uv sync` command again whenever you update the code.
+- `HDF5` is the path to your private SNOMED CT file (International Edition 2024-04-01).
 
 ## Running the site report
 
@@ -80,7 +63,7 @@ Some annotation documents are taken out before anything is computed:
 - `copy`: identical to another annotator's version of the same document. One of each group of copies is kept
   (`EXCLUDE_COPIES`).
 - `low_change`: only slightly different from the pre-annotation, with an F1 against it of at least
-  1 - `PREANNO_LOW_CHANGE`. These are always counted, but only excluded if `EXCLUDE_LOW_CHANGE` is set.
+  1 - `PREANNO_LOW_CHANGE`. This is set to FALSE by default!
 
 A document that is left with fewer than `MIN_ANNOTATORS` annotators after this is dropped. Everything that was
 excluded is listed in `local/exclusion_report.md`.
