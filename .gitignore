@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.venv
+.pytest_cache/
+
+# exports, the SNOMED CT HDF5 file (licensed), cache and results: never commit them
+data/
+*.zip
+*.hdf5
+results/
+
+# the site's own configuration (paths)
+config/site.cfg
+
+.DS_Store

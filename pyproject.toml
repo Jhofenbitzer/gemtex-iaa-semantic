@@ -1,0 +1,38 @@
+[project]
+name = "gemtex-iaa-semantic"
+version = "0.1.0"
+description = "Inter-annotator agreement of the GeMTeX semantic annotation (SNOMED CT), per site and pooled across the consortium"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Justin Hofenbitzer", email = "justin.hofenbitzer@tum.de" }]
+requires-python = ">=3.10"
+dependencies = [
+    "dkpro-cassis>=0.10.1",
+    "h5py>=3.14.0",
+    "numpy>=2.0",
+    "pandas>=2.2,<3",  # tested with pandas 2.x
+    "pyarrow>=15",
+    "scipy>=1.11",
+]
+
+[project.scripts]
+gemtex-iaa-semantic = "gemtex_iaa_semantic.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "krippendorff>=0.8.1",  # tests: reference implementation of α
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gemtex_iaa_semantic"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# independent of the editable-install .pth (skipped by Python if flagged hidden, e.g. on macOS)
+pythonpath = ["src"]
